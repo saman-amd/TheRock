@@ -82,11 +82,6 @@ class TestROCmSanity:
             f"Failed to search for {to_search} in rocminfo output",
         )
 
-    # TODO(#4755): Re-enable test for windows once offload-arch.exe is fixed
-    @pytest.mark.skipif(
-        is_windows(),
-        reason="Windows offload-arch.exe is not retrieving correct data, ignoring test",
-    )
     # TODO(#7458): Re-enable once gfx1250 binary translator supports this kernel code pattern
     @pytest.mark.skipif(
         AMDGPU_FAMILIES and "gfx125X-dcgpu" in AMDGPU_FAMILIES,
@@ -129,22 +124,24 @@ class TestROCmSanity:
         # Compiling .cpp file using amdclang++
         rocm_path = (THEROCK_BIN_DIR / "..").resolve()
         hip_check_executable_file = f"hip_check{platform_executable_suffix}"
-        run_command(
-            [
-                f"{THEROCK_BIN_DIR}/amdclang++",
-                f"--hip-path={rocm_path}",
-                f"--hip-device-lib-path={rocm_path}/lib/llvm/amdgcn/bitcode",
-                "-x",
-                "hip",
-                str(THIS_DIR / "hip_check.cpp"),
-                "-Xlinker",
-                f"-rpath={THEROCK_BIN_DIR}/../lib/",
-                f"--offload-arch={offload_arch}",
-                "-o",
-                hip_check_executable_file,
-            ],
-            cwd=str(THEROCK_BIN_DIR),
-        )
+        compile_command = [
+            f"{THEROCK_BIN_DIR}/amdclang++{platform_executable_suffix}",
+            f"--hip-path={rocm_path}",
+            f"--hip-device-lib-path={rocm_path}/lib/llvm/amdgcn/bitcode",
+            "-x",
+            "hip",
+            str(THIS_DIR / "hip_check.cpp"),
+        ]
+        # rpath is an ELF concept; on Windows the DLLs are located next to the
+        # executable in the bin directory that we build and run from.
+        if not is_windows():
+            compile_command += ["-Xlinker", f"-rpath={THEROCK_BIN_DIR}/../lib/"]
+        compile_command += [
+            f"--offload-arch={offload_arch}",
+            "-o",
+            hip_check_executable_file,
+        ]
+        run_command(compile_command, cwd=str(THEROCK_BIN_DIR))
 
         # Running and checking the executable
         platform_executable_prefix = "./" if not is_windows() else ""
