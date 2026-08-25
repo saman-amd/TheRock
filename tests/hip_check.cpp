@@ -2,7 +2,34 @@
 // SPDX-License-Identifier: MIT
 
 #include <cstdio>
+#include <cstdlib>
 #include <hip/hip_runtime.h>
+
+// Device visibility is the usual cause of a zero-device runtime on a CI runner,
+// so report it alongside any failure.
+static void report_environment() {
+  int device_count = -1;
+  hipError_t err = hipGetDeviceCount(&device_count);
+  fprintf(stderr, "hip_check: visible devices: %d (hipGetDeviceCount: %s)\n",
+          device_count, hipGetErrorName(err));
+  for (const char *name : {"ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES",
+                           "CUDA_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL"}) {
+    const char *value = getenv(name);
+    fprintf(stderr, "hip_check: %s=%s\n", name, value ? value : "<unset>");
+  }
+}
+
+static void check_hip_error(hipError_t err, const char *api) {
+  if (err == hipSuccess)
+    return;
+  fprintf(stderr, "hip_check: %s failed: %s (%s)\n", api, hipGetErrorName(err),
+          hipGetErrorString(err));
+  report_environment();
+  exit(1);
+}
+
+#define HIP_CHECK(expr) check_hip_error((expr), #expr)
+
 __global__ void squares(int *buf) {
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   printf("Thread %#04x is writing %4d\n", i, i * i);
@@ -12,10 +39,11 @@ int main() {
   constexpr int gridsize = 1;
   constexpr int blocksize = 64;
   constexpr int size = gridsize * blocksize;
-  int *d_buf;
-  hipHostMalloc(&d_buf, size * sizeof(int));
+  int *d_buf = nullptr;
+  HIP_CHECK(hipHostMalloc(&d_buf, size * sizeof(int)));
   hipLaunchKernelGGL(squares, gridsize, blocksize, 0, 0, d_buf);
-  hipDeviceSynchronize();
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
 
   // Check results.
   int mismatches_count = 0;
