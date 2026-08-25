@@ -160,6 +160,8 @@ import tempfile
 import textwrap
 import urllib.request
 
+import aotriton_image_check
+
 script_dir = Path(__file__).resolve().parent
 
 is_windows = platform.system() == "Windows"
@@ -1297,6 +1299,17 @@ def do_build_pytorch(
     run_command(build_command, cwd=pytorch_dir, env=env)
     built_wheel = find_built_wheel(pytorch_dir / "dist", "torch")
     print(f"Found built wheel: {built_wheel}")
+
+    if use_flash_attention:
+        # An AOTriton build that silently emits fewer image sets than requested
+        # leaves fused attention unavailable on the uncovered targets, which
+        # degrades SDPA to the O(seq_len^2) math backend (ROCm/TheRock#7569).
+        print("+++ Verifying AOTriton GPU images in built torch wheel:")
+        if aotriton_image_check.main(
+            [str(built_wheel), "--gfx-archs", env.get("PYTORCH_ROCM_ARCH", "")]
+        ):
+            raise RuntimeError("AOTriton GPU image check failed (see output above)")
+
     copy_to_output(args, built_wheel)
 
     print("+++ Installing built torch:")
