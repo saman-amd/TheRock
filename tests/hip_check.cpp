@@ -24,7 +24,6 @@ static void check_hip_error(hipError_t err, const char *api) {
     return;
   fprintf(stderr, "hip_check: %s failed: %s (%s)\n", api, hipGetErrorName(err),
           hipGetErrorString(err));
-  report_environment();
   exit(1);
 }
 
@@ -39,6 +38,7 @@ int main() {
   constexpr int gridsize = 1;
   constexpr int blocksize = 64;
   constexpr int size = gridsize * blocksize;
+  report_environment();
   int *d_buf = nullptr;
   HIP_CHECK(hipHostMalloc(&d_buf, size * sizeof(int)));
   hipLaunchKernelGGL(squares, gridsize, blocksize, 0, 0, d_buf);
