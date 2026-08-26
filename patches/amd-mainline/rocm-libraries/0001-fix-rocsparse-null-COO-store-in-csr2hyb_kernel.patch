@@ -1,0 +1,66 @@
+From f1ccb8b0215d4ade7c7c6bd971030e1bf7b7fb18 Mon Sep 17 00:00:00 2001
+From: saman-amd <saman-amd@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 00:05:19 +0000
+Subject: [PATCH] fix(rocsparse): null COO store in csr2hyb_kernel on gfx1151
+
+csr2hyb_template allocates the HYB COO arrays only when the host-side
+coo_nnz is greater than zero, but csr2hyb_kernel does not read coo_nnz.
+It re-derives per-row overflow from csr_row_ptr, so whenever the host
+decided there was no COO part while the kernel found a row longer than
+ell_width, the kernel stored through a null pointer:
+
+  Memory Fault Error [GPU index: 0, faulting addr: 0x0,
+    kernel: void rocsparse::csr2hyb_kernel<512u, float>(...)]
+  Memory access fault by GPU node-1 on address (nil).
+    Reason: Page not present or supervisor privilege.
+
+The existing coo_row_ind null test only guarded the coo_idx computation,
+leaving the three stores in the else branch unguarded. Gate those stores
+on the same predicate so the kernel can never write to an array that was
+not allocated.
+
+Why this is carried as a patch: the fix belongs in rocm-libraries, but it
+aborts all three rocsparse shards of the gfx1151 test suite today, so it
+is carried here until the upstream change merges and the submodule is
+bumped past it. See ROCm/TheRock#6472.
+
+Reproduction (gfx1151, rocsparse-test built from the submodule):
+
+  HIP_LAUNCH_BLOCKING=1 ./rocsparse-test --gtest_filter=\
+    'quick/copy_info.auxiliary/f32_r_37_37_NT_rand:\
+     quick/copy_info.auxiliary/f32_r_37_37_T_rand'
+
+Both tests pass individually; the fault needs the pair. Without this
+change 7 of 10 runs abort with the fault above, with it 10 of 10 report
+"[  PASSED  ] 2 tests.". Running the wider *csr2hyb*:*hyb*:*copy_info*
+filter aborts after 1315 tests unpatched and completes past 1551 patched.
+
+diff --git a/projects/rocsparse/library/src/conversion/csr2hyb_device.h b/projects/rocsparse/library/src/conversion/csr2hyb_device.h
+index 2529588b5d8..bde6996b9eb 100644
+--- a/projects/rocsparse/library/src/conversion/csr2hyb_device.h
++++ b/projects/rocsparse/library/src/conversion/csr2hyb_device.h
+@@ -87,7 +87,11 @@ namespace rocsparse
+ 
+         rocsparse_int row_begin = csr_row_ptr[ai] - idx_base;
+         rocsparse_int row_end   = csr_row_ptr[ai + 1] - idx_base;
+-        rocsparse_int coo_idx   = coo_row_ind ? workspace[ai] - idx_base : 0;
++
++        // The COO arrays are only allocated when the host determined that some
++        // row overflows ell_width. Nothing may be stored through them otherwise.
++        const bool    has_coo = (coo_row_ind != nullptr);
++        rocsparse_int coo_idx = has_coo ? workspace[ai] - idx_base : 0;
+ 
+         // Fill HYB matrix
+         for(rocsparse_int aj = row_begin; aj < row_end; ++aj)
+@@ -99,7 +103,7 @@ namespace rocsparse
+                 ell_col_ind[idx]  = csr_col_ind[aj];
+                 ell_val[idx]      = csr_val[aj];
+             }
+-            else
++            else if(has_coo)
+             {
+                 // Fill COO part
+                 coo_row_ind[coo_idx] = ai + idx_base;
+-- 
+2.43.0
+
